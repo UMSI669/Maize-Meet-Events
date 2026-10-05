@@ -15,12 +15,14 @@ import EventCard from '../components/EventCard';
 import EmptyState from '../components/EmptyState';
 import { useAppContext } from '../context/AppContext';
 import { refreshEvents } from '../services/eventService';
+import { CARD_LAYOUTS } from '../storage/preferences';
 import { colors } from '../theme/theme';
 
 const categories = ['All', 'Academic', 'Arts', 'Career', 'Community', 'Workshop'];
 
 export default function DiscoverScreen({ navigation }) {
-  const { events, setEvents, savedEventIds, toggleSaved } = useAppContext();
+  const { events, setEvents, savedEventIds, toggleSaved, preferences } = useAppContext();
+  const compact = preferences.cardLayout === CARD_LAYOUTS.compact;
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [refreshing, setRefreshing] = useState(false);
@@ -98,8 +100,8 @@ export default function DiscoverScreen({ navigation }) {
       <FlatList
         contentContainerStyle={filteredEvents.length ? styles.list : styles.emptyList}
         data={filteredEvents}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        keyExtractor={(_, index) => String(index)}
+        ItemSeparatorComponent={() => <View style={compact ? styles.compactSeparator : styles.separator} />}
+        keyExtractor={(item, index) => `${item.id}-${index}`}
         ListEmptyComponent={
           <EmptyState
             actionLabel="Clear filters"
@@ -111,8 +113,9 @@ export default function DiscoverScreen({ navigation }) {
         refreshControl={<RefreshControl onRefresh={handleRefresh} refreshing={refreshing} />}
         renderItem={({ item, index }) => (
           <EventCard
+            compact={compact}
             event={item}
-            initiallySaved={savedEventIds.includes(item.id)}
+            saved={savedEventIds.includes(item.id)}
             onPress={() =>
               navigation.navigate('EventDetails', {
                 eventIndex: index,
@@ -170,4 +173,5 @@ const styles = StyleSheet.create({
   list: { paddingBottom: 28, paddingHorizontal: 20 },
   emptyList: { flexGrow: 1 },
   separator: { height: 12 },
+  compactSeparator: { height: 8 },
 });
