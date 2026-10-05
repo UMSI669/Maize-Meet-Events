@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   Pressable,
@@ -19,34 +19,82 @@ import { colors } from '../theme/theme';
 
 const categories = ['All', 'Academic', 'Arts', 'Career', 'Community', 'Workshop'];
 
+const layoutOptions = [
+  { value: 'standard', label: 'Card layout', icon: 'view-agenda-outline' },
+  { value: 'compact', label: 'Compact layout', icon: 'view-headline' },
+];
+
+function normalizeSearch(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’‘]/g, "'")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 export default function DiscoverScreen({ navigation }) {
-  const { events, setEvents, savedEventIds, toggleSaved } = useAppContext();
+  const {
+    events,
+    setEvents,
+    savedEventIds,
+    toggleSaved,
+    preferences,
+    setCardLayoutPreference,
+  } = useAppContext();
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
+  const [layoutError, setLayoutError] = useState('');
+  const compact = preferences.cardLayout === 'compact';
+  const listRef = useRef(null);
 
   const filteredEvents = useMemo(() => {
-    events.sort((left, right) => new Date(left.startsAt) - new Date(right.startsAt));
-    return events.filter((event) => {
-      const matchesSearch = !query || event.title.includes(query);
-      const matchesCategory =
-        selectedCategory === 'All' || event.category === selectedCategory;
-      return matchesSearch && matchesCategory;
-    });
-  }, [events, query]);
+    const searchTerms = normalizeSearch(query).split(' ').filter(Boolean);
+
+    return [...events]
+      .sort((left, right) => new Date(left.startsAt) - new Date(right.startsAt))
+      .filter((event) => {
+        const searchableText = normalizeSearch([
+          event.title,
+          event.description,
+          event.category,
+          event.location,
+          event.room,
+          ...(event.tags || []),
+        ].join(' '));
+        const matchesSearch = searchTerms.every((term) => searchableText.includes(term));
+        const matchesCategory =
+          selectedCategory === 'All' ||
+          normalizeSearch(event.category) === normalizeSearch(selectedCategory);
+        return matchesSearch && matchesCategory;
+      });
+  }, [events, query, selectedCategory]);
+
+  useEffect(() => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [query, selectedCategory]);
 
   async function handleRefresh() {
     setRefreshing(true);
     setRefreshError('');
-    setEvents([]);
     try {
       const nextEvents = await refreshEvents();
       setEvents(nextEvents);
-      setRefreshing(false);
     } catch (error) {
       setRefreshError(error.message);
+    } finally {
+      setRefreshing(false);
     }
+  }
+
+  function changeLayout(cardLayout) {
+    setLayoutError('');
+    setCardLayoutPreference(cardLayout).catch(() =>
+      setLayoutError('Could not save your layout preference.')
+    );
   }
 
   function clearFilters() {
@@ -65,6 +113,10 @@ export default function DiscoverScreen({ navigation }) {
       <View style={styles.searchBox}>
         <MaterialCommunityIcons color={colors.muted} name="magnify" size={21} />
         <TextInput
+          accessibilityLabel="Search events"
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
           onChangeText={setQuery}
           placeholder="Search events"
           placeholderTextColor="#7B858E"
@@ -79,6 +131,7 @@ export default function DiscoverScreen({ navigation }) {
           const selected = category === selectedCategory;
           return (
             <Pressable
+              accessibilityLabel={`${category} events`}
               accessibilityRole="button"
               accessibilityState={{ selected }}
               key={category}
@@ -93,13 +146,45 @@ export default function DiscoverScreen({ navigation }) {
         })}
       </View>
 
+      <View style={styles.listHeader}>
+        <Text style={styles.resultCount}>
+          {filteredEvents.length} {filteredEvents.length === 1 ? 'event' : 'events'}
+        </Text>
+        <View style={styles.layoutToggle}>
+          {layoutOptions.map((option) => {
+            const selected = option.value === preferences.cardLayout;
+            return (
+              <Pressable
+                accessibilityLabel={option.label}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                key={option.value}
+                onPress={() => changeLayout(option.value)}
+                style={[styles.layoutOption, selected && styles.selectedLayoutOption]}
+              >
+                <MaterialCommunityIcons
+                  color={selected ? '#FFFFFF' : colors.blue}
+                  name={option.icon}
+                  size={20}
+                />
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
       {refreshError ? <Text style={styles.refreshError}>{refreshError}</Text> : null}
+      {layoutError ? <Text style={styles.refreshError}>{layoutError}</Text> : null}
 
       <FlatList
+        ref={listRef}
         contentContainerStyle={filteredEvents.length ? styles.list : styles.emptyList}
         data={filteredEvents}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        keyExtractor={(_, index) => String(index)}
+        extraData={[savedEventIds, preferences.cardLayout]}
+        ItemSeparatorComponent={() => (
+          <View style={compact ? styles.compactSeparator : styles.separator} />
+        )}
+        keyExtractor={(item) => item.id}
         ListEmptyComponent={
           <EmptyState
             actionLabel="Clear filters"
@@ -109,16 +194,15 @@ export default function DiscoverScreen({ navigation }) {
           />
         }
         refreshControl={<RefreshControl onRefresh={handleRefresh} refreshing={refreshing} />}
-        renderItem={({ item, index }) => (
+        renderItem={({ item }) => (
           <EventCard
             event={item}
             initiallySaved={savedEventIds.includes(item.id)}
-            onPress={() =>
-              navigation.navigate('EventDetails', {
-                eventIndex: index,
-                source: 'Discover',
-              })
-            }
+            layout={preferences.cardLayout}
+            onPress={() => navigation.navigate('EventDetails', {
+              eventId: item.id,
+              source: 'Discover',
+            })}
             onToggleSaved={toggleSaved}
           />
         )}
@@ -166,8 +250,26 @@ const styles = StyleSheet.create({
   selectedChip: { backgroundColor: colors.blue, borderColor: colors.blue },
   chipText: { color: colors.blue, fontSize: 13, fontWeight: '700' },
   selectedChipText: { color: '#FFFFFF' },
+  listHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 20,
+  },
+  resultCount: { color: colors.muted, fontSize: 13, fontWeight: '700' },
+  layoutToggle: {
+    borderColor: '#AAB4BE',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
+  layoutOption: { alignItems: 'center', height: 44, justifyContent: 'center', width: 48 },
+  selectedLayoutOption: { backgroundColor: colors.blue },
   refreshError: { color: colors.danger, marginHorizontal: 20, marginBottom: 8 },
   list: { paddingBottom: 28, paddingHorizontal: 20 },
   emptyList: { flexGrow: 1 },
   separator: { height: 12 },
+  compactSeparator: { height: 6 },
 });
