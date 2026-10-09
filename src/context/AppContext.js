@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { getEvents, getSavedEventIds, toggleSavedEvent } from '../db/database';
-import { getPreferences } from '../storage/preferences';
+import { getPreferences, setCardLayout } from '../storage/preferences';
+import { resetLocalAppData } from '../services/reset';
 
 const AppContext = createContext(null);
 
@@ -8,33 +9,93 @@ export function AppContextProvider({ children, initialSession }) {
   const [session, setSession] = useState(initialSession);
   const [events, setEvents] = useState([]);
   const [savedEventIds, setSavedEventIds] = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [eventsError, setEventsError] = useState('');
+  const savedStateQueue = useRef(Promise.resolve());
+  const resetting = useRef(false);
+  const [layoutReady, setLayoutReady] = useState(false);
+  const [layoutSaving, setLayoutSaving] = useState(false);
   const [preferences, setPreferences] = useState({
     darkTheme: false,
+    cardLayout: 'list',
   });
 
   useEffect(() => {
-    getEvents().then(setEvents);
-    getSavedEventIds().then(setSavedEventIds);
-    getPreferences().then(setPreferences);
+    reloadEvents();
+    savedStateQueue.current = getSavedEventIds().then(setSavedEventIds);
+    getPreferences().then(setPreferences).catch(() => {}).finally(() => setLayoutReady(true));
   }, []);
 
-  async function toggleSaved(eventId) {
-    const isSaved = await toggleSavedEvent(eventId);
-    setSavedEventIds((current) =>
-      isSaved ? [...current, eventId] : current.filter((id) => id !== eventId)
-    );
-    return isSaved;
+  async function reloadEvents() {
+    setEventsLoading(true);
+    setEventsError('');
+    try {
+      setEvents(await getEvents());
+    } catch {
+      setEventsError('Unable to load events. Please try again.');
+    } finally {
+      setEventsLoading(false);
+    }
+  }
+
+  function toggleSaved(eventId) {
+    if (resetting.current) return Promise.reject(new Error('App data is being reset.'));
+    const operation = savedStateQueue.current.then(async () => {
+      const isSaved = await toggleSavedEvent(eventId);
+      setSavedEventIds((current) => {
+        const remaining = current.filter((id) => id !== eventId);
+        return isSaved ? [...remaining, eventId] : remaining;
+      });
+      return isSaved;
+    });
+    savedStateQueue.current = operation.catch(() => {});
+    return operation;
+  }
+
+  async function changeCardLayout(layout) {
+    if (!layoutReady || layoutSaving || resetting.current) return;
+    setLayoutSaving(true);
+    try {
+      await setCardLayout(layout);
+      setPreferences((current) => ({ ...current, cardLayout: layout }));
+    } finally {
+      setLayoutSaving(false);
+    }
+  }
+
+  async function resetAppData() {
+    if (resetting.current) return;
+    resetting.current = true;
+    try {
+      await savedStateQueue.current;
+      const initialEvents = await resetLocalAppData();
+      setEvents(initialEvents);
+      setSavedEventIds([]);
+      setPreferences({ darkTheme: false, cardLayout: 'list' });
+      setEventsError('');
+      setSession(null);
+    } finally {
+      resetting.current = false;
+    }
   }
 
   const value = {
+    resetAppData,
     session,
     setSession,
     events,
+    eventsLoading,
+    eventsError,
+    setEventsError,
+    reloadEvents,
     setEvents,
     savedEventIds,
     toggleSaved,
     preferences,
     setPreferences,
+    changeCardLayout,
+    layoutReady,
+    layoutSaving,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

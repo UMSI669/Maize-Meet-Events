@@ -4,6 +4,7 @@ import { seedEvents } from '../data/seedEvents';
 const DATABASE_NAME = 'maizemeet.db';
 
 let databasePromise;
+let savedMutationQueue = Promise.resolve();
 
 export function getDatabase() {
   if (!databasePromise) {
@@ -27,7 +28,7 @@ export async function initializeDatabase() {
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS events (
       rowId INTEGER PRIMARY KEY AUTOINCREMENT,
-      id TEXT NOT NULL,
+      id TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL,
       description TEXT NOT NULL,
       startsAt TEXT NOT NULL,
@@ -53,13 +54,26 @@ export async function initializeDatabase() {
       eventId TEXT NOT NULL,
       createdAt TEXT NOT NULL
     );
+    -- Keep the original event row, including its current registration count.
+    -- Related tables reference event IDs, so their data survives this cleanup.
+    DELETE FROM events
+    WHERE rowId NOT IN (SELECT MIN(rowId) FROM events GROUP BY id);
+    CREATE UNIQUE INDEX IF NOT EXISTS events_id_unique ON events (id);
+    DELETE FROM saved_events
+    WHERE rowId NOT IN (SELECT MIN(rowId) FROM saved_events GROUP BY eventId);
+    CREATE UNIQUE INDEX IF NOT EXISTS saved_events_event_id_unique ON saved_events (eventId);
   `);
 
+  await seedDatabase(db);
+}
+
+async function seedDatabase(db) {
   for (const event of seedEvents) {
     await db.runAsync(
       `INSERT INTO events
         (id, title, description, startsAt, endsAt, category, location, room, capacity, registeredCount, tags)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
       event.id,
       event.title,
       event.description,
@@ -75,10 +89,33 @@ export async function initializeDatabase() {
   }
 }
 
+export async function resetDatabase() {
+  await savedMutationQueue;
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    await db.execAsync(`
+      DELETE FROM saved_events;
+      DELETE FROM notes;
+      DELETE FROM registrations;
+      DELETE FROM events;
+    `);
+    await seedDatabase(db);
+  });
+}
+
 function mapEvent(row) {
+  let tags = [];
+  try {
+    const parsed = row.tags ? JSON.parse(row.tags) : [];
+    if (Array.isArray(parsed)) {
+      tags = parsed.filter((tag) => typeof tag === 'string');
+    }
+  } catch {
+    // Older rows may contain invalid JSON; optional tags must not prevent loading.
+  }
   return {
     ...row,
-    tags: row.tags ? JSON.parse(row.tags) : undefined,
+    tags,
   };
 }
 
@@ -122,7 +159,14 @@ export async function getSavedEventIds() {
   }
 }
 
-export async function toggleSavedEvent(eventId) {
+export function toggleSavedEvent(eventId) {
+  // Serialize the read/write pair so rapid taps cannot read the same old state.
+  const operation = savedMutationQueue.then(() => performSavedToggle(eventId));
+  savedMutationQueue = operation.catch(() => {});
+  return operation;
+}
+
+async function performSavedToggle(eventId) {
   const db = await getDatabase();
   const saved = await db.getFirstAsync(
     'SELECT rowId FROM saved_events WHERE eventId = ?',
@@ -146,8 +190,11 @@ export async function getNote(eventId) {
 export async function saveNote(eventId, body) {
   const db = await getDatabase();
   const updatedAt = new Date().toISOString();
-  await db.execAsync(
-    `INSERT OR REPLACE INTO notes (eventId, body, updatedAt) VALUES ('${eventId}', '${body}', '${updatedAt}')`
+  await db.runAsync(
+    'INSERT OR REPLACE INTO notes (eventId, body, updatedAt) VALUES (?, ?, ?)',
+    eventId,
+    body,
+    updatedAt
   );
   return updatedAt;
 }
