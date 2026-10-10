@@ -3,7 +3,6 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  StyleSheet,
   Text as NativeText,
   TextInput,
   View,
@@ -15,9 +14,16 @@ import EventCard from '../components/EventCard';
 import EmptyState from '../components/EmptyState';
 import { useAppContext } from '../context/AppContext';
 import { refreshEvents } from '../services/eventService';
-import { colors } from '../theme/theme';
+import { createThemedStyles, useAppColors } from '../theme/theme';
 
 const categories = ['All', 'Academic', 'Arts', 'Career', 'Community', 'Workshop'];
+
+// [Modified] QA-06: Normalizes text for search. Trims leading and trailing spaces, collapses
+// repeated spaces into one, and lowercases everything, so "  ai   ETHICS " matches
+// "AI Ethics Panel".
+function normalizeSearchText(text) {
+  return (text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
 
 export default function DiscoverScreen({ navigation }) {
   const { events, setEvents, savedEventIds, toggleSaved } = useAppContext();
@@ -25,27 +31,43 @@ export default function DiscoverScreen({ navigation }) {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
+  const colors = useAppColors();
+  const styles = useStyles();
 
+  // [Modified] QA-03: Sorts a copy of the events ([...events]) by start time instead of
+  // calling events.sort() directly. sort() reorders an array in place, so the old code
+  // silently reordered the shared event list in AppContext that other screens rely on.
   const filteredEvents = useMemo(() => {
-    events.sort((left, right) => new Date(left.startsAt) - new Date(right.startsAt));
-    return events.filter((event) => {
-      const matchesSearch = !query || event.title.includes(query);
+    const sortedEvents = [...events].sort(
+      (left, right) => new Date(left.startsAt) - new Date(right.startsAt)
+    );
+    // [Modified] QA-06: Search compares normalized text (see normalizeSearchText above), so
+    // capitalization and extra spaces no longer stop an event from matching. A query that is
+    // only spaces counts as empty and shows every event.
+    const normalizedQuery = normalizeSearchText(query);
+    return sortedEvents.filter((event) => {
+      const matchesSearch =
+        !normalizedQuery || normalizeSearchText(event.title).includes(normalizedQuery);
       const matchesCategory =
         selectedCategory === 'All' || event.category === selectedCategory;
       return matchesSearch && matchesCategory;
     });
-  }, [events, query]);
+    // [Modified] QA-06: Added selectedCategory to this dependency list. Without it, React kept
+    // reusing the old filtered list when a category chip was tapped: the chip highlighted, but
+    // the events didn't change until the search text changed. That made the category buttons
+    // look like they were missing taps.
+  }, [events, query, selectedCategory]);
 
   async function handleRefresh() {
     setRefreshing(true);
     setRefreshError('');
-    setEvents([]);
     try {
       const nextEvents = await refreshEvents();
       setEvents(nextEvents);
-      setRefreshing(false);
     } catch (error) {
       setRefreshError(error.message);
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -67,7 +89,7 @@ export default function DiscoverScreen({ navigation }) {
         <TextInput
           onChangeText={setQuery}
           placeholder="Search events"
-          placeholderTextColor="#7B858E"
+          placeholderTextColor={colors.placeholder}
           returnKeyType="search"
           style={styles.searchInput}
           value={query}
@@ -78,9 +100,12 @@ export default function DiscoverScreen({ navigation }) {
         {categories.map((category) => {
           const selected = category === selectedCategory;
           return (
+            // [Modified] QA-06: hitSlop enlarges each chip's touch area by 6 points on every side,
+            // so taps just outside a chip's edge still select it.
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected }}
+              hitSlop={6}
               key={category}
               onPress={() => setSelectedCategory(category)}
               style={[styles.chip, selected && styles.selectedChip]}
@@ -99,7 +124,10 @@ export default function DiscoverScreen({ navigation }) {
         contentContainerStyle={filteredEvents.length ? styles.list : styles.emptyList}
         data={filteredEvents}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
-        keyExtractor={(_, index) => String(index)}
+        // [Modified] QA-03: Each row is keyed by its unique event id instead of its position.
+        // With position keys, React reused the wrong card when a search or category filter
+        // changed which events were in the list.
+        keyExtractor={(item) => item.id}
         ListEmptyComponent={
           <EmptyState
             actionLabel="Clear filters"
@@ -109,13 +137,19 @@ export default function DiscoverScreen({ navigation }) {
           />
         }
         refreshControl={<RefreshControl onRefresh={handleRefresh} refreshing={refreshing} />}
-        renderItem={({ item, index }) => (
+        renderItem={({ item }) => (
           <EventCard
             event={item}
-            initiallySaved={savedEventIds.includes(item.id)}
+            // [Modified] QA-02: Passes the live saved state from context so the heart
+            // always matches the database.
+            saved={savedEventIds.includes(item.id)}
+            // [Modified] QA-03: Opens the details screen with the event's unique id. Before, it
+            // sent the row's position in the filtered list (eventIndex), and the details
+            // screen looked up that position in the full, unfiltered list. After a search or
+            // category filter, those positions don't line up, so a different event opened.
             onPress={() =>
               navigation.navigate('EventDetails', {
-                eventIndex: index,
+                eventId: item.id,
                 source: 'Discover',
               })
             }
@@ -127,7 +161,7 @@ export default function DiscoverScreen({ navigation }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles((colors) => ({
   safeArea: { backgroundColor: colors.cream, flex: 1 },
   header: { paddingHorizontal: 20, paddingTop: 12 },
   eyebrow: { color: colors.blueLight, fontSize: 11, fontWeight: '800', letterSpacing: 1.4 },
@@ -135,7 +169,7 @@ const styles = StyleSheet.create({
   subheading: { color: colors.muted, fontSize: 15, marginTop: 3 },
   searchBox: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: 13,
     borderWidth: 1,
@@ -155,7 +189,7 @@ const styles = StyleSheet.create({
   chip: {
     alignItems: 'center',
     backgroundColor: 'transparent',
-    borderColor: '#AAB4BE',
+    borderColor: colors.chipBorder,
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
@@ -165,9 +199,9 @@ const styles = StyleSheet.create({
   },
   selectedChip: { backgroundColor: colors.blue, borderColor: colors.blue },
   chipText: { color: colors.blue, fontSize: 13, fontWeight: '700' },
-  selectedChipText: { color: '#FFFFFF' },
+  selectedChipText: { color: colors.onAccent },
   refreshError: { color: colors.danger, marginHorizontal: 20, marginBottom: 8 },
   list: { paddingBottom: 28, paddingHorizontal: 20 },
   emptyList: { flexGrow: 1 },
   separator: { height: 12 },
-});
+}));
