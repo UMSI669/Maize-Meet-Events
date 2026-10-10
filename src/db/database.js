@@ -55,6 +55,12 @@ export async function initializeDatabase() {
     );
   `);
 
+
+const existingEvent = await db.getFirstAsync(
+  'SELECT id FROM events LIMIT 1'
+);
+
+if (!existingEvent) {
   for (const event of seedEvents) {
     await db.runAsync(
       `INSERT INTO events
@@ -73,6 +79,7 @@ export async function initializeDatabase() {
       event.tags ? JSON.stringify(event.tags) : null
     );
   }
+}
 }
 
 function mapEvent(row) {
