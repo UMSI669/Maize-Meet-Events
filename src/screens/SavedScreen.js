@@ -1,32 +1,21 @@
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text } from '@rneui/themed';
 import EventCard from '../components/EventCard';
 import EmptyState from '../components/EmptyState';
-import LoadingOverlay from '../components/LoadingOverlay';
-import { getSavedEvents } from '../db/database';
 import { useAppContext } from '../context/AppContext';
 import { colors } from '../theme/theme';
 
 export default function SavedScreen({ navigation }) {
-  const { savedEventIds, toggleSaved } = useAppContext();
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    getSavedEvents()
-      .then(setEvents)
-      .finally(() => setLoading(false));
-  }, []);
-
-  const displayedEvents = events.sort(
-    (left, right) => new Date(left.startsAt) - new Date(right.startsAt)
+  const { events, savedEventIds, toggleSaved, preferences } = useAppContext();
+  const compact = preferences.cardLayout === 'compact';
+  const displayedEvents = useMemo(
+    () => events
+      .filter((event) => savedEventIds.includes(event.id))
+      .sort((left, right) => new Date(left.startsAt) - new Date(right.startsAt)),
+    [events, savedEventIds]
   );
-
-  if (loading) {
-    return <LoadingOverlay label="Loading saved events..." />;
-  }
 
   return (
     <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -37,7 +26,10 @@ export default function SavedScreen({ navigation }) {
       <FlatList
         contentContainerStyle={displayedEvents.length ? styles.list : styles.emptyList}
         data={displayedEvents}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        extraData={[savedEventIds, preferences.cardLayout]}
+        ItemSeparatorComponent={() => (
+          <View style={compact ? styles.compactSeparator : styles.separator} />
+        )}
         keyExtractor={(item, index) => `${item.id}-${index}`}
         ListEmptyComponent={
           <EmptyState
@@ -49,6 +41,7 @@ export default function SavedScreen({ navigation }) {
           <EventCard
             event={item}
             initiallySaved={savedEventIds.includes(item.id)}
+            layout={preferences.cardLayout}
             onPress={() => navigation.navigate('EventDetails', { eventId: item.id })}
             onToggleSaved={toggleSaved}
           />
@@ -66,4 +59,5 @@ const styles = StyleSheet.create({
   list: { paddingBottom: 28, paddingHorizontal: 20, paddingTop: 18 },
   emptyList: { flexGrow: 1 },
   separator: { height: 12 },
+  compactSeparator: { height: 6 },
 });

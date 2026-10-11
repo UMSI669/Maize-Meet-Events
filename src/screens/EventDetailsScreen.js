@@ -11,31 +11,37 @@ import { formatFullEventDate } from '../utils/date';
 import { colors } from '../theme/theme';
 
 export default function EventDetailsScreen({ navigation, route }) {
-  const { events, savedEventIds, toggleSaved } = useAppContext();
+  const { savedEventIds, toggleSaved } = useAppContext();
   const [event, setEvent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [registered, setRegistered] = useState(false);
   const [registering, setRegistering] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const saved = event ? savedEventIds.includes(event.id) : false;
 
   useEffect(() => {
     async function loadEvent() {
-      const selected = route.params?.eventIndex !== undefined
-        ? events[route.params.eventIndex]
-        : await getEvent(route.params?.eventId);
+      const selected = await getEvent(route.params?.eventId);
       setEvent(selected);
       if (selected) {
-        setSaved(savedEventIds.includes(selected.id));
         setRegistered(await isRegistered(selected.id));
       }
       setLoading(false);
     }
     loadEvent();
-  }, [route.params?.eventId, route.params?.eventIndex]);
+  }, [route.params?.eventId]);
 
   async function handleSave() {
-    const next = await toggleSaved(event.id);
-    setSaved(next);
+    if (saving) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await toggleSaved(event.id);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleRegister() {
@@ -69,14 +75,23 @@ export default function EventDetailsScreen({ navigation, route }) {
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
       <View style={styles.navBar}>
         <Pressable
-          onPress={() =>
-            route.params.source ? navigation.goBack() : navigation.navigate(route.params.source)
-          }
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.navigate('Main');
+            }
+          }}
           style={styles.navButton}
         >
           <MaterialCommunityIcons color={colors.blue} name="arrow-left" size={25} />
         </Pressable>
-        <Pressable onPress={handleSave} style={styles.navButton}>
+        <Pressable
+          accessibilityLabel={saved ? 'Remove from saved events' : 'Save event'}
+          disabled={saving}
+          onPress={handleSave}
+          style={styles.navButton}
+        >
           <MaterialCommunityIcons
             color={saved ? '#C6253D' : colors.blue}
             name={saved ? 'heart' : 'heart-outline'}
